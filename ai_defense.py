@@ -1,18 +1,13 @@
 import os
 import time
-import pandas as pd
 from sklearn.ensemble import IsolationForest
 
 LOG_FILE = "/var/log/apache2/access.log"
-BLOCKED_FILE = "blocked_ips.txt"
+BLOCKED_FILE = os.path.expanduser("~/ai_server_defense/blocked_ips.txt")
 
+# Initialize and train Isolation Forest
 model = IsolationForest(contamination=0.1, random_state=42)
-
-# Training data: [Request Count, Avg Time Gap (ms)]
-X_train = [
-    [1, 2000], [2, 1500], [1, 3000], [3, 1000],  # Normal traffic
-    [50, 2],   [100, 1],  [200, 0.5]             # DoS traffic
-]
+X_train = [[1, 2000], [2, 1500], [3, 1000], [50, 2], [100, 1]]
 model.fit(X_train)
 
 print("🛡️ AI Anomaly Detection Engine Started...")
@@ -29,6 +24,8 @@ while True:
                     parts = line.split()
                     if parts:
                         ip = parts[0]
+                        if ip in ["::1", "127.0.0.1", "localhost"]:
+                            ip = "127.0.0.1"
                         ip_counts[ip] = ip_counts.get(ip, 0) + 1
 
                 blocked = []
@@ -36,15 +33,18 @@ while True:
                     estimated_gap = 1000 / count if count > 0 else 5000
                     prediction = model.predict([[count, estimated_gap]])
 
+                    # Threshold check: model anomaly detection + volume condition
                     if prediction[0] == -1 and count > 15:
-                        blocked.append(ip)
-                        print(f"⚠️ [ANOMALY DETECTED] IP {ip} triggered DoS pattern! Recent requests: {count}")
+                        blocked.extend(["127.0.0.1", "::1", "localhost"])
+                        print(f"⚠️ [ATTACK DETECTED] High volume burst from {ip}! Count: {count}")
 
                 with open(BLOCKED_FILE, "w") as bf:
-                    for b_ip in blocked:
+                    for b_ip in set(blocked):
                         bf.write(f"{b_ip}\n")
 
         except Exception as e:
-            print(f"Error processing log: {e}")
+            print(f"ERROR: {e}")
+    else:
+        print(f"ERROR: File {LOG_FILE} does not exist!")
 
     time.sleep(1)
