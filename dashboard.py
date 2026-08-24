@@ -1,56 +1,75 @@
 import os
-import time
-import pandas as pd
-import plotly.express as px
-import streamlit as st
+import re
+from flask import Flask, render_template_string
 
-st.set_page_config(page_title="AI Cyber Defense Dashboard", page_icon="🛡️", layout="wide")
+app = Flask(__name__)
 
-LOG_FILE_PATH = "/var/log/apache2/access.log"
-st.title("🛡️ Real-Time Security & Traffic Monitor")
+APACHE_LOG = "/var/log/apache2/access.log"
 
-# Empty container to overwrite UI cleanly every cycle (Prevents stacking)
-ui_container = st.empty()
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AI Security Dashboard</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f4f4f9; }
+        h2 { color: #333; }
+        table { width: 100%; border-collapse: collapse; background: #fff; }
+        th, td { padding: 10px; border: 1px solid #ddd; text-align: left; }
+        th { background: #333; color: #fff; }
+        .status-200 { color: green; font-weight: bold; }
+        .status-429 { color: red; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h2>Live Traffic Monitoring & Security Log</h2>
+    <table>
+        <tr>
+            <th>#</th>
+            <th>Client IP</th>
+            <th>Endpoint</th>
+            <th>HTTP Status</th>
+            <th>Raw Log</th>
+        </tr>
+        {% for log in logs %}
+        <tr>
+            <td>{{ loop.index }}</td>
+            <td>{{ log.ip }}</td>
+            <td>{{ log.endpoint }}</td>
+            <td class="status-{{ log.status }}">{{ log.status }}</td>
+            <td>{{ log.raw }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+</body>
+</html>
+"""
 
-with ui_container.container():
-    if not os.path.exists(LOG_FILE_PATH):
-        st.error(f"❌ File missing: {LOG_FILE_PATH}")
-    else:
-        try:
-            with open(LOG_FILE_PATH, "r") as f:
-                lines = [line.strip() for line in f.readlines()[-300:] if line.strip()]
+def parse_logs():
+    parsed_logs = []
 
-            if not lines:
-                st.info("Waiting for web traffic... Run a curl request to view activity.")
-            else:
-                records = []
-                for line in lines:
-                    parts = line.split()
-                    if len(parts) >= 1:
-                        ip = parts[0]
-                        if ip in ["::1", "127.0.0.1"]:
-                            ip = "localhost"
-                        
-                        endpoint = parts[6] if len(parts) > 6 else "/"
-                        status = parts[8] if len(parts) > 8 else "200"
-                        records.append({"Client IP": ip, "Endpoint": endpoint, "HTTP Status": status, "Raw Log": line})
+    if os.path.exists(APACHE_LOG):
+        with open(APACHE_LOG, "r") as f:
+            lines = f.readlines()
 
-                df = pd.DataFrame(records)
+        log_pattern = re.compile(r'(\S+) - - \[.*?\] "GET (\S+) HTTP/\d\.\d" (\d{3})')
 
-                if not df.empty:
-                    st.subheader("📊 Live Request Volume")
-                    counts = df["Client IP"].value_counts().reset_index()
-                    counts.columns = ["Client IP", "Total Requests"]
+        for line in lines[-100:]:
+            match = log_pattern.search(line)
+            if match:
+                ip, endpoint, status = match.groups()
+                parsed_logs.append({
+                    "ip": ip,
+                    "endpoint": endpoint,
+                    "status": status,
+                    "raw": line.strip()
+                })
+    return parsed_logs
 
-                    fig = px.bar(
-                        counts, x="Client IP", y="Total Requests", 
-                        color="Total Requests", color_continuous_scale="Reds", text="Total Requests"
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-                    st.dataframe(df[["Client IP", "Endpoint", "HTTP Status", "Raw Log"]].tail(10), use_container_width=True)
+@app.route('/')
+def index():
+    logs = parse_logs()
+    return render_template_string(HTML_TEMPLATE, logs=logs)
 
-        except Exception as e:
-            st.error(f"❌ Read Error: {e}")
-
-time.sleep(2)
-st.rerun()
+if __name__ == '__main__':
+    app.run(host='127.0.0.1', port=8000)
