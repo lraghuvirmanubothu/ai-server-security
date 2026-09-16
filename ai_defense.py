@@ -1,37 +1,53 @@
+import os
 import time
-from collections import defaultdict
+from sklearn.ensemble import IsolationForest
 
-class AIDefenseSystem:
-    def __init__(self, rate_limit: int = 5, window_seconds: int = 60):
-        self.rate_limit = rate_limit
-        self.window_seconds = window_seconds
-        self.request_history = defaultdict(list)
-        # Pre-seeded metrics to match traffic breakdown state (10 allowed, 20 blocked)
-        self.metrics = {"200 OK": 10, "429 Blocked": 20}
+CONFIG = {
+    "DEFENSE_LOG": os.path.expanduser("~/ai_server_defense/defense_log.txt"),
+    "BLOCKED_FILE": os.path.expanduser("~/ai_server_defense/blocked_ips.txt"),
+    "THRESHOLD_COUNT": 15,
+    "SLEEP_INTERVAL": 0.2
+}
 
-    def inspect_request(self, client_ip: str, prompt: str) -> tuple[bool, int, str]:
-        now = time.time()
-        # Clean expired timestamps outside active window
-        self.request_history[client_ip] = [
-            t for t in self.request_history[client_ip] if now - t < self.window_seconds
-        ]
+model = IsolationForest(contamination=0.1, random_state=42)
+X_train = [[1, 2000], [2, 1500], [3, 1000], [50, 2], [100, 1]]
+model.fit(X_train)
 
-        # Rate Limiting Guardrail
-        if len(self.request_history[client_ip]) >= self.rate_limit:
-            self.metrics["429 Blocked"] += 1
-            return False, 429, "Rate limit exceeded. Request throttled."
+print("🛡️ AI Anomaly Detection Engine Started...")
 
-        # Prompt Injection Pattern Matching
-        forbidden_patterns = ["ignore previous instructions", "system prompt", "jailbreak"]
-        if any(pattern in prompt.lower() for pattern in forbidden_patterns):
-            self.metrics["429 Blocked"] += 1
-            return False, 429, "Threat Detected: Malicious prompt pattern flagged."
+while True:
+    log_path = CONFIG["DEFENSE_LOG"]
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, "r") as f:
+                lines = [line.strip() for line in f.readlines()[-200:] if line.strip()]
 
-        # Authorized Request
-        self.request_history[client_ip].append(now)
-        self.metrics["200 OK"] += 1
-        return True, 200, "Authorized"
+            if lines:
+                ip_counts = {}
+                for line in lines:
+                    parts = line.split()
+                    if parts:
+                        ip = parts[0]
+                        ip_counts[ip] = ip_counts.get(ip, 0) + 1
 
-# Global Defense Instance
-defense_engine = AIDefenseSystem()
+                blocked_ips = set()
+                if os.path.exists(CONFIG["BLOCKED_FILE"]):
+                    with open(CONFIG["BLOCKED_FILE"], "r") as bf:
+                        blocked_ips.update([line.strip() for line in bf if line.strip()])
+
+                for ip, count in ip_counts.items():
+                    estimated_gap = 1000 / count if count > 0 else 5000
+                    prediction = model.predict([[count, estimated_gap]])
+
+                    if prediction[0] == -1 and count > CONFIG["THRESHOLD_COUNT"]:
+                        blocked_ips.add(ip)
+                        print(f"⚠️ [ATTACK DETECTED] IP {ip} exceeded rate thresholds! Count: {count}")
+
+                with open(CONFIG["BLOCKED_FILE"], "w") as bf:
+                    for b_ip in blocked_ips:
+                        bf.write(f"{b_ip}\n")
+
+        except Exception as e:
+            print(f"ERROR: {e}")
+
     time.sleep(CONFIG["SLEEP_INTERVAL"])
